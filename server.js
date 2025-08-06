@@ -20,7 +20,7 @@ const app = express();
 // app.use(express.static('public'))
 app.use(
   cors({
-    origin: ["http://localhost:3000", "http://localhost:5173"],
+    origin: ["https://opal-three.vercel", "http://localhost:5173"],
   })
 );
 const upload = multer({
