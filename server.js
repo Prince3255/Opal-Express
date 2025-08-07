@@ -12,6 +12,7 @@ import { BatchClient } from "@speechmatics/batch-client";
 import Ffmpeg from "fluent-ffmpeg";
 import FfmpegInstaller from "@ffmpeg-installer/ffmpeg";
 import multer from "multer";
+import os from "os";
 
 dotenv.config();
 Ffmpeg.setFfmpegPath(FfmpegInstaller.path);
@@ -24,7 +25,7 @@ app.use(
   })
 );
 const upload = multer({
-  dest: "/temp_upload",
+  dest: os.tmpdir(),
   limits: {
     fileSize: 50 * 1024 * 1024,
   },
@@ -109,7 +110,13 @@ cloudinary.config({
 
 const server = http.createServer(app);
 
-const transcript = async (audioFile, trial, userId, secure_url, workspaceId) => {
+const transcript = async (
+  audioFile,
+  trial,
+  userId,
+  secure_url,
+  workspaceId
+) => {
   const response = await smClient.transcribe(
     audioFile,
     { transcription_config: { language: "en" } },
@@ -156,7 +163,7 @@ Transcript: "${transcript}"`;
         },
       }
     );
-    
+
     let title = titleRes.data.candidates[0].content.parts[0].text;
     const match = title.match(/^\s*\*\s*(.+)$/m);
     title = match ? match[1].trim() : title.trim();
@@ -266,7 +273,9 @@ io.on("connection", (socket) => {
   socket.on("video-chunks", async ({ chunks, filename }) => {
     try {
       recorderChunks.push(chunks);
-      const writeStream = fs.createWriteStream("temp_upload/" + filename);
+      const writeStream = fs.createWriteStream(
+        path.join(os.tmpdir(), filename)
+      );
       const videoBlob = new Blob(recorderChunks, {
         type: "video/webm; codecs=vp9",
       });
@@ -293,8 +302,8 @@ io.on("connection", (socket) => {
     recorderChunks = [];
 
     // Fixed: Use correct path for file reading
-    const filePath = path.join("temp_upload", data.filename);
-    const audioPath = path.join("temp_upload", data.filename + ".wav");
+    const filePath = path.join(os.tmpdir(), data.filename);
+    const audioPath = path.join(os.tmpdir(), data.filename + ".wav");
     let plan = "FREE";
     try {
       const processing = await axios.post(
@@ -326,34 +335,54 @@ io.on("connection", (socket) => {
       if (uploadFile) {
         console.log("🟢 Video uploaded to Cloudinary:", uploadFile.secure_url);
       }
-      
+
       plan = processing?.data?.plan;
       let workspaceId = processing?.data?.workspaceId;
       // Process transcription for PRO users
       if (processing.data.plan === "PRO") {
         try {
-          await new Promise((resolve, reject) => {
-            Ffmpeg(filePath)
-              .noVideo()
-              .audioCodec("pcm_s16le")
-              .audioChannels(1)
-              .audioFrequency(16000)
-              .on("end", () => {
-                console.log("audio extracted: ", audioPath);
-                resolve();
-              })
-              .on("error", (err) => {
-                console.log("audio extraction failed: ", err);
-                reject(err);
-              })
-              .save(audioPath);
+          // await new Promise((resolve, reject) => {
+          //   Ffmpeg(filePath)
+          //     .noVideo()
+          //     .audioCodec("pcm_s16le")
+          //     .audioChannels(1)
+          //     .audioFrequency(16000)
+          //     .on("end", () => {
+          //       console.log("audio extracted: ", audioPath);
+          //       resolve();
+          //     })
+          //     .on("error", (err) => {
+          //       console.log("audio extraction failed: ", err);
+          //       reject(err);
+          //     })
+          //     .save(audioPath);
+          // });
+
+          // const audioBuffer = await fs.promises.readFile(audioPath);
+          // const audioFile = new File([audioBuffer], path.basename(audioPath));
+          const audioUrl = uploadFile.secure_url.replace(".webm", ".mp3");
+
+          const audioFile = await axios.get(audioUrl, {
+            responseType: "arraybuffer",
           });
-
-          const audioBuffer = await fs.promises.readFile(audioPath);
-          const audioFile = new File([audioBuffer], path.basename(audioPath));
-
-          if (audioFile) {
-            await transcript(audioFile, false, data.userId, data.filename, workspaceId);
+      
+          const audioBuffer = audioFile.data;
+      
+          const file = new File(
+            [audioBuffer],
+            `audio-${Math.ceil(Math.random() * 99999 + Math.random() * 55558)}.mp3`,
+            {
+              type: "audio/mpeg",
+            }
+          );
+          if (file) {
+            await transcript(
+              file,
+              false,
+              data.userId,
+              data.filename,
+              workspaceId
+            );
           } else {
             console.log("Error while getting transcript");
           }
@@ -392,25 +421,33 @@ io.on("connection", (socket) => {
       console.error("🔴 Error processing video:", error);
       socket.emit("upload-error", { message: "Failed to process video" });
     } finally {
-      [filePath, audioPath].forEach((p) => {
-        if (p == audioPath && plan === "PRO") {
-          fs.unlink(p, (err) => {
-            if (!err) {
-              console.log(`${p} file removed`);
-            } else {
-              console.log("Error while removing, ", p, err);
-            }
-          });
-        } else if (p == filePath) {
-          fs.unlink(p, (err) => {
-            if (!err) {
-              console.log(`${p} file removed`);
-            } else {
-              console.log("Error while removing, ", p, err);
-            }
-          });
-        }
+      // [filePath, audioPath].forEach((p) => {
+      //   if (p == audioPath && plan === "PRO") {
+      //     fs.unlink(p, (err) => {
+      //       if (!err) {
+      //         console.log(`${p} file removed`);
+      //       } else {
+      //         console.log("Error while removing, ", p, err);
+      //       }
+      //     });
+      //   } else if (p == filePath) {
+      //     fs.unlink(p, (err) => {
+      //       if (!err) {
+      //         console.log(`${p} file removed`);
+      //       } else {
+      //         console.log("Error while removing, ", p, err);
+      //       }
+      //     });
+      //   }
+      // });
+      fs.unlink(filePath, (err) => {
+        if (err) console.error("Error deleting temp file:", filePath, err);
+        else console.log("🗑️ Temp file deleted:", filePath);
       });
+      fs.unlink(audioPath, (err) => {
+        if (err) console.error("Error deleting temp file:", audioPath, err);
+        else console.log("🗑️ Temp file deleted:", audioPath);
+      })
     }
   });
 });
