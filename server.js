@@ -57,7 +57,7 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
       console.log("🟢 Video uploaded to Cloudinary:", uploadFile.secure_url);
 
       if (plan === "PRO") {
-        const transcribe = await axios.post("http://localhost:5000/api/audio", {
+        const transcribe = await axios.post("https://opal-express-08so.onrender.com/api/audio", {
           videoUrl: uploadFile.secure_url,
           clerkId: userId,
           plan: plan,
@@ -251,7 +251,7 @@ app.post("/api/audio", async (req, res) => {
 
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:5173", "http://localhost:3000"],
+    origin: ["http://localhost:5173", "https://opal-three.vercel"],
     methods: ["GET", "POST"],
     credentials: true,
     allowedHeaders: ["Content-Type"],
