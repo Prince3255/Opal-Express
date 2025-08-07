@@ -9,19 +9,17 @@ import axios from "axios";
 import { v2 as cloudinary } from "cloudinary";
 import path from "path";
 import { BatchClient } from "@speechmatics/batch-client";
-import Ffmpeg from "fluent-ffmpeg";
-import FfmpegInstaller from "@ffmpeg-installer/ffmpeg";
 import multer from "multer";
 import os from "os";
 
 dotenv.config();
-Ffmpeg.setFfmpegPath(FfmpegInstaller.path);
+// Ffmpeg.setFfmpegPath(FfmpegInstaller.path);
 
 const app = express();
 // app.use(express.static('public'))
 app.use(
   cors({
-    origin: ["https://opal-three.vercel", "http://localhost:5173"],
+    origin: ["https://opal-three.vercel.app", "http://localhost:5173"],
   })
 );
 const upload = multer({
@@ -251,7 +249,7 @@ app.post("/api/audio", async (req, res) => {
 
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:5173", "https://opal-three.vercel"],
+    origin: ["http://localhost:5173", "https://opal-three.vercel.app"],
     methods: ["GET", "POST"],
     credentials: true,
     allowedHeaders: ["Content-Type"],
