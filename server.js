@@ -4,7 +4,6 @@ import { Server } from "socket.io";
 import fs from "fs";
 import http from "http";
 import dotenv from "dotenv";
-import { Readable } from "stream";
 import axios from "axios";
 import { v2 as cloudinary } from "cloudinary";
 import path from "path";
@@ -13,92 +12,33 @@ import multer from "multer";
 import os from "os";
 
 dotenv.config();
-// Ffmpeg.setFfmpegPath(FfmpegInstaller.path);
 
 const app = express();
-// app.use(express.static('public'))
-app.use(
-  cors({
-    origin: ["https://opal-three.vercel.app", "http://localhost:5173"],
-  })
-);
-const upload = multer({
-  dest: os.tmpdir(),
-  limits: {
-    fileSize: 100 * 1024 * 1024,
-  },
-});
-app.post("/api/upload", upload.single("file"), async (req, res) => {
-  let filePath = req?.file?.path;
-  try {
-    const { userId, clerkId, plan, workspaceId } = req.body;
-    const processing = await axios.post(
-      `${process.env.NEXT_API_HOST}/recording/${userId}/processing`,
-      {
-        filename: req.file.filename,
-      }
-    );
 
-    const uploadFile = await cloudinary.uploader.upload(filePath, {
-      resource_type: "video",
-      public_id: req.file.filename.replace(/\.[^/.]+$/, ""),
-      folder: "video-recording-opal",
-      chunk_size: 8000000,
-      eager: [
-        { width: 1280, height: 720, crop: "limit", quality: "auto" },
-        { width: 854, height: 480, crop: "limit", quality: "auto" },
-      ],
-      eager_async: true,
-    });
+const allowedOrigins = [
+  "https://opal-three.vercel.app",
+  "http://localhost:5173",
+];
 
-    if (uploadFile) {
-      console.log("🟢 Video uploaded to Cloudinary:", uploadFile.secure_url);
-
-      if (plan === "PRO") {
-        const transcribe = await axios.post("https://opal-express-08so.onrender.com/api/audio", {
-          videoUrl: uploadFile.secure_url,
-          clerkId: userId,
-          plan: plan,
-          workspaceId: workspaceId,
-        });
-
-        if (transcribe.ok) {
-          console.log("🟢 Transcription completed");
-        }
-      }
-
-      const stopProcessing = await axios.post(
-        `${process.env.NEXT_API_HOST}/recording/${userId}/complete`,
-        {
-          filename: req.file.filename,
-          videoUrl: uploadFile.secure_url,
-          videoId: uploadFile.public_id,
-        }
-      );
-
-      if (stopProcessing.data.status !== 200) {
-        console.log(
-          "Error: Something went wrong when stopping the process and try to complete the processing stage"
-        );
-      }
-
-      return res.json({ status: 200, message: "File uploaded successfully" });
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
     }
-  } catch (error) {
-    console.log("Error while uploading", error);
-    return res.json({ status: 500, message: "Something went wrong" });
-  } finally {
-    fs.unlinkSync(filePath);
-  }
-});
+
+    console.error("Blocked CORS origin:", origin);
+    return callback(new Error("Not allowed by CORS"));
+  },
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true,
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 
 app.use(express.json({ limit: "20mb" }));
 app.use(express.urlencoded({ limit: "20mb", extended: true }));
-
-const smClient = new BatchClient({
-  apiKey: process.env.SPEECHMICS_API_KEY,
-  appId: process.env.SPEECHMICS_APP_ID,
-});
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_NAME,
@@ -108,356 +48,533 @@ cloudinary.config({
 
 const server = http.createServer(app);
 
+const uploadDirectory = path.join(os.tmpdir(), "opal-uploads");
+const socketRecordingDirectory = path.join(
+  os.tmpdir(),
+  "opal-socket-recordings"
+);
+
+fs.mkdirSync(uploadDirectory, { recursive: true });
+fs.mkdirSync(socketRecordingDirectory, { recursive: true });
+
+const upload = multer({
+  dest: uploadDirectory,
+  limits: {
+    fileSize: 500 * 1024 * 1024,
+  },
+});
+
+const smClient = new BatchClient({
+  apiKey: process.env.SPEECHMICS_API_KEY,
+  appId: process.env.SPEECHMICS_APP_ID,
+});
+
+
+app.post(
+  "/api/upload",
+  upload.single("file"),
+  async (req, res, next) => {
+    const filePath = req.file?.path;
+
+    try {
+      if (!req.file || !filePath) {
+        return res.status(400).json({
+          status: 400,
+          message: "No video file was received",
+        });
+      }
+
+      const {
+        userId,
+        clerkId,
+        plan,
+        workspaceId,
+      } = req.body;
+
+      if (!userId || !clerkId || !workspaceId) {
+        return res.status(400).json({
+          status: 400,
+          message: "Missing user or workspace information",
+        });
+      }
+
+      console.log("Direct upload received:", {
+        originalName: req.file.originalname,
+        size: req.file.size,
+        mimeType: req.file.mimetype,
+        filePath,
+        userId,
+        plan,
+        workspaceId,
+      });
+
+      await axios.post(
+        `${process.env.NEXT_API_HOST}/recording/${userId}/processing`,
+        {
+          filename: req.file.filename,
+        }
+      );
+
+      const cloudinaryUpload =
+        await cloudinary.uploader.upload_large(filePath, {
+          resource_type: "video",
+          public_id: req.file.filename,
+          folder: "video-recording-opal",
+          chunk_size: 20 * 1024 * 1024,
+          eager: [
+            {
+              width: 1280,
+              height: 720,
+              crop: "limit",
+              quality: "auto",
+            },
+            {
+              width: 854,
+              height: 480,
+              crop: "limit",
+              quality: "auto",
+            },
+          ],
+          eager_async: true,
+        });
+
+      console.log(
+        "Direct video uploaded:",
+        cloudinaryUpload.secure_url
+      );
+
+      // Start transcription separately for PRO users.
+      // This does not block the upload response.
+      if (plan === "PRO") {
+        axios
+          .post("https://opal-express-08so.onrender.com/api/audio", {
+            videoUrl: cloudinaryUpload.secure_url,
+            clerkId: userId,
+            plan,
+            workspaceId,
+          })
+          .then(() => {
+            console.log("Transcription request started");
+          })
+          .catch((error) => {
+            console.error(
+              "Background transcription failed:",
+              error.response?.data || error.message
+            );
+          });
+      }
+
+      const completeResponse = await axios.post(
+        `${process.env.NEXT_API_HOST}/recording/${userId}/complete`,
+        {
+          filename: req.file.filename,
+          videoUrl: cloudinaryUpload.secure_url,
+          videoId: cloudinaryUpload.public_id,
+        }
+      );
+
+      if (completeResponse.data?.status !== 200) {
+        console.error(
+          "Recording completion failed:",
+          completeResponse.data
+        );
+      }
+
+      return res.status(200).json({
+        status: 200,
+        message: "File uploaded successfully",
+        videoUrl: cloudinaryUpload.secure_url,
+      });
+    } catch (error) {
+      console.error("Direct upload failed:", {
+        message: error.message,
+        response: error.response?.data,
+      });
+
+      next(error);
+    } finally {
+      if (filePath) {
+        fs.unlink(filePath, (error) => {
+          if (error && error.code !== "ENOENT") {
+            console.error(
+              "Temporary direct-upload file deletion failed:",
+              error
+            );
+          }
+        });
+      }
+    }
+  }
+);
+
 const transcript = async (
   audioFile,
   trial,
   userId,
-  secure_url,
+  secureUrl,
   workspaceId
 ) => {
   const response = await smClient.transcribe(
     audioFile,
-    { transcription_config: { language: "en" } },
+    {
+      transcription_config: {
+        language: "en",
+      },
+    },
     "json-v2"
   );
 
-  const transcript = response.results
-    .map((r) => r.alternatives[0].content)
+  const transcriptText = response.results
+    .map((result) => result.alternatives?.[0]?.content || "")
     .join(" ");
 
-  console.log("📝 Transcript:", transcript);
+  console.log("Transcript:", transcriptText);
 
-  if (transcript) {
-    const description = await axios.post(
-      "https://api-inference.huggingface.co/models/philschmid/bart-large-cnn-samsum",
-      { inputs: transcript },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
-    const titlePrompt = `Based strictly on the transcript below, create a short and accurate title that summarizes the main topic.
+  if (!transcriptText) {
+    console.log("No transcript generated");
+    return;
+  }
 
-Transcript: "${transcript}"`;
-    const titleRes = await axios.post(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
-      {
-        contents: [
-          {
-            parts: [
-              {
-                text: `Generate one single, catchy and creative title for this ${transcript}. Return only the title with no explanation or list, just the title itself.`,
-              },
-            ],
-          },
-        ],
+  const descriptionResponse = await axios.post(
+    "https://api-inference.huggingface.co/models/philschmid/bart-large-cnn-samsum",
+    {
+      inputs: transcriptText,
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
+        "Content-Type": "application/json",
       },
-      {
-        headers: {
-          "x-goog-api-key": process.env.GEMINI_API_KEY,
-          "Content-Type": "application/json",
+    }
+  );
+
+  const titleResponse = await axios.post(
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+    {
+      contents: [
+        {
+          parts: [
+            {
+              text: `Generate one short, accurate title for this transcript. Return only the title.
+
+Transcript:
+${transcriptText}`,
+            },
+          ],
         },
-      }
+      ],
+    },
+    {
+      headers: {
+        "x-goog-api-key": process.env.GEMINI_API_KEY,
+        "Content-Type": "application/json",
+      },
+    }
+  );
+
+  let title =
+    titleResponse.data?.candidates?.[0]?.content?.parts?.[0]?.text ||
+    "Untitled video";
+
+  const match = title.match(/^\s*\*\s*(.+)$/m);
+  title = match ? match[1].trim() : title.trim();
+
+  const description =
+    descriptionResponse.data?.[0]?.summary_text ||
+    "No description generated";
+
+  const result = await axios.post(
+    `${process.env.NEXT_API_HOST}/recording/${userId}/transcribe`,
+    {
+      filename: secureUrl,
+      content: {
+        title,
+        description,
+      },
+      transcript: transcriptText,
+      trial,
+      workspaceId,
+    }
+  );
+
+  if (result.data?.status !== 200) {
+    console.error(
+      "Title and description creation failed:",
+      result.data
     );
-
-    let title = titleRes.data.candidates[0].content.parts[0].text;
-    const match = title.match(/^\s*\*\s*(.+)$/m);
-    title = match ? match[1].trim() : title.trim();
-
-    console.log("📋 Title:", title);
-    let titleAndSummaryGenerated = null;
-    if (trial) {
-      titleAndSummaryGenerated = await axios.post(
-        `${process.env.NEXT_API_HOST}/recording/${userId}/transcribe`,
-        {
-          filename: secure_url,
-          content: {
-            title: title || "Generate a title",
-            description:
-              description.data[0].summary_text || "Generate a summary",
-          },
-          transcript: transcript,
-          trial: trial,
-          workspaceId: workspaceId,
-        }
-      );
-    } else {
-      titleAndSummaryGenerated = await axios.post(
-        `${process.env.NEXT_API_HOST}/recording/${userId}/transcribe`,
-        {
-          filename: secure_url,
-          content: {
-            title: title || "Generate a title",
-            description:
-              description.data[0].summary_text || "Generate a summary",
-          },
-          transcript: transcript,
-          trial: trial,
-          workspaceId: workspaceId,
-        }
-      );
-    }
-
-    if (titleAndSummaryGenerated?.data?.status !== 200) {
-      console.log(
-        "Error: Something went wrong with creating the title and description"
-      );
-    }
   } else {
-    console.log("Error: No transcript generated");
+    console.log("Title and description saved");
   }
 };
 
 app.post("/api/audio", async (req, res) => {
   try {
-    const { videoUrl, clerkId, plan, workspaceId } = await req.body;
+    const {
+      videoUrl,
+      clerkId,
+      plan,
+      workspaceId,
+    } = req.body;
 
-    const audioUrl = videoUrl.replace(".webm", ".mp3");
+    if (!videoUrl || !clerkId || !workspaceId) {
+      return res.status(400).json({
+        status: 400,
+        message: "Missing audio processing data",
+      });
+    }
 
-    const audioFile = await axios.get(audioUrl, {
+    const audioUrl = videoUrl.replace(
+      /\.(webm|mp4|mov)(\?.*)?$/i,
+      ".mp3"
+    );
+
+    const audioResponse = await axios.get(audioUrl, {
       responseType: "arraybuffer",
+      maxContentLength: 100 * 1024 * 1024,
+      maxBodyLength: 100 * 1024 * 1024,
     });
 
-    const audioBuffer = audioFile.data;
-
-    const file = new File(
-      [audioBuffer],
-      `audio-${Math.ceil(Math.random() * 99999 + Math.random() * 55558)}.mp3`,
+    const audioFile = new File(
+      [audioResponse.data],
+      `audio-${Date.now()}.mp3`,
       {
         type: "audio/mpeg",
       }
     );
 
-    if (file) {
-      if (plan === "FREE") {
-        await transcript(file, true, clerkId, videoUrl, workspaceId);
-      } else {
-        await transcript(file, false, clerkId, videoUrl, workspaceId);
-      }
-    } else {
-      console.log("Error while getting transcript");
-    }
+    await transcript(
+      audioFile,
+      plan === "FREE",
+      clerkId,
+      videoUrl,
+      workspaceId
+    );
 
-    return res.status(200).json({ data: "Video uploaded successfully" });
+    return res.status(200).json({
+      status: 200,
+      message: "Transcription completed",
+    });
   } catch (error) {
-    console.log("Error in getting video url");
-    return res.status(500).json({ data: "Error in getting video url" });
+    console.error("Audio transcription failed:", {
+      message: error.message,
+      response: error.response?.data,
+    });
+
+    return res.status(500).json({
+      status: 500,
+      message: "Audio transcription failed",
+    });
   }
 });
 
+
+const recordingStreams = new Map();
+
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:5173", "https://opal-three.vercel.app"],
+    origin: allowedOrigins,
     methods: ["GET", "POST"],
     credentials: true,
-    allowedHeaders: ["Content-Type"],
   },
   path: "/socket.io",
   transports: ["websocket", "polling"],
 });
 
-let recorderChunks = [];
-
 io.on("connection", (socket) => {
-  console.log("Socket is connected");
-  socket.emit("connected", "helo");
+  console.log("Socket connected:", socket.id);
 
-  socket.on("abcd", (arg) => {
-    console.log(arg);
+  socket.emit("connected", "hello");
+
+  socket.on("abcd", (message) => {
+    console.log("Received abcd:", message);
   });
 
   socket.on("video-chunks", async ({ chunks, filename }) => {
     try {
-      recorderChunks.push(chunks);
-      const writeStream = fs.createWriteStream(
-        path.join(os.tmpdir(), filename)
-      );
-      const videoBlob = new Blob(recorderChunks, {
-        type: "video/webm; codecs=vp9",
-      });
-      const buffer = Buffer.from(await videoBlob.arrayBuffer());
-      const readStream = Readable.from(buffer);
+      if (!filename || !chunks) {
+        return socket.emit("upload-error", {
+          message: "Chunk or filename is missing",
+        });
+      }
 
-      readStream.pipe(writeStream);
+      const key = `${socket.id}:${filename}`;
 
-      writeStream.on("finish", () => {
-        console.log("🟢 Chunk saved for:", filename);
-      });
+      let recording = recordingStreams.get(key);
 
-      writeStream.on("error", (error) => {
-        console.error("🔴 Error saving chunk:", error);
-        socket.emit("upload-error", { message: "Failed to save video chunk" });
+      if (!recording) {
+        const safeFilename = filename.replace(
+          /[^a-zA-Z0-9._-]/g,
+          "_"
+        );
+
+        const filePath = path.join(
+          socketRecordingDirectory,
+          `${socket.id}-${safeFilename}`
+        );
+
+        const stream = fs.createWriteStream(filePath);
+
+        recording = {
+          stream,
+          filePath,
+        };
+
+        recordingStreams.set(key, recording);
+
+        console.log("Started socket recording:", filePath);
+      }
+
+      let buffer;
+
+      if (chunks instanceof ArrayBuffer) {
+        buffer = Buffer.from(chunks);
+      } else if (ArrayBuffer.isView(chunks)) {
+        buffer = Buffer.from(
+          chunks.buffer,
+          chunks.byteOffset,
+          chunks.byteLength
+        );
+      } else if (
+        chunks &&
+        chunks.type === "Buffer" &&
+        Array.isArray(chunks.data)
+      ) {
+        buffer = Buffer.from(chunks.data);
+      } else {
+        throw new Error("Unsupported chunk format");
+      }
+
+      const canContinue = recording.stream.write(buffer);
+
+      if (!canContinue) {
+        await new Promise((resolve) => {
+          recording.stream.once("drain", resolve);
+        });
+      }
+
+      socket.emit("chunk-received", {
+        filename,
+        bytes: buffer.length,
       });
     } catch (error) {
-      console.log("Error in video chunk ", error);
+      console.error("Socket chunk write failed:", error);
+
+      socket.emit("upload-error", {
+        message: "Failed to save video chunk",
+      });
     }
   });
 
-  socket.on("process-video", async (data) => {
-    console.log("Processing video ", data);
-    recorderChunks = [];
+  socket.on("finish-video", async ({ filename }) => {
+    const key = `${socket.id}:${filename}`;
+    const recording = recordingStreams.get(key);
 
-    // Fixed: Use correct path for file reading
-    const filePath = path.join(os.tmpdir(), data.filename);
-    const audioPath = path.join(os.tmpdir(), data.filename + ".wav");
-    let plan = "FREE";
+    if (!recording) {
+      return socket.emit("upload-error", {
+        message: "Recording file was not found",
+      });
+    }
+
+    const filePath = recording.filePath;
+
     try {
-      const processing = await axios.post(
-        `${process.env.NEXT_API_HOST}/recording/${data.userId}/processing`,
-        {
-          filename: data.filename,
-        }
-      );
-
-      if (processing.data.status !== 200) {
-        return console.log(
-          "Error: Something went wrong with creating the processing file"
-        );
-      }
-
-      // Upload to Cloudinary
-      const uploadFile = await cloudinary.uploader.upload(filePath, {
-        resource_type: "video",
-        public_id: data.filename.replace(/\.[^/.]+$/, ""),
-        folder: "video-recording-opal",
-        chunk_size: 8000000,
-        eager: [
-          { width: 1280, height: 720, crop: "limit", quality: "auto" },
-          { width: 854, height: 480, crop: "limit", quality: "auto" },
-        ],
-        eager_async: true,
-      });
-
-      if (uploadFile) {
-        console.log("🟢 Video uploaded to Cloudinary:", uploadFile.secure_url);
-      }
-
-      plan = processing?.data?.plan;
-      let workspaceId = processing?.data?.workspaceId;
-      // Process transcription for PRO users
-      if (processing.data.plan === "PRO") {
-        try {
-          // await new Promise((resolve, reject) => {
-          //   Ffmpeg(filePath)
-          //     .noVideo()
-          //     .audioCodec("pcm_s16le")
-          //     .audioChannels(1)
-          //     .audioFrequency(16000)
-          //     .on("end", () => {
-          //       console.log("audio extracted: ", audioPath);
-          //       resolve();
-          //     })
-          //     .on("error", (err) => {
-          //       console.log("audio extraction failed: ", err);
-          //       reject(err);
-          //     })
-          //     .save(audioPath);
-          // });
-
-          // const audioBuffer = await fs.promises.readFile(audioPath);
-          // const audioFile = new File([audioBuffer], path.basename(audioPath));
-          const audioUrl = uploadFile.secure_url.replace(".webm", ".mp3");
-
-          const audioFile = await axios.get(audioUrl, {
-            responseType: "arraybuffer",
-          });
-      
-          const audioBuffer = audioFile.data;
-      
-          const file = new File(
-            [audioBuffer],
-            `audio-${Math.ceil(Math.random() * 99999 + Math.random() * 55558)}.mp3`,
-            {
-              type: "audio/mpeg",
-            }
-          );
-          if (file) {
-            await transcript(
-              file,
-              false,
-              data.userId,
-              data.filename,
-              workspaceId
-            );
+      await new Promise((resolve, reject) => {
+        recording.stream.end((error) => {
+          if (error) {
+            reject(error);
           } else {
-            console.log("Error while getting transcript");
+            resolve();
           }
-        } catch (error) {
-          console.error("transcription-error ", { error });
-        }
-      }
+        });
+      });
 
-      // Complete processing
-      const stopProcessing = await axios.post(
-        `${process.env.NEXT_API_HOST}/recording/${data.userId}/complete`,
-        {
-          filename: data.filename,
-          videoUrl: uploadFile.secure_url,
-          videoId: uploadFile.public_id,
-        }
+      console.log("All socket chunks saved:", filePath);
+
+      const cloudinaryUpload =
+        await cloudinary.uploader.upload_large(filePath, {
+          resource_type: "video",
+          public_id: filename.replace(/\.[^/.]+$/, ""),
+          folder: "video-recording-opal",
+          chunk_size: 20 * 1024 * 1024,
+          eager: [
+            {
+              width: 1280,
+              height: 720,
+              crop: "limit",
+              quality: "auto",
+            },
+            {
+              width: 854,
+              height: 480,
+              crop: "limit",
+              quality: "auto",
+            },
+          ],
+          eager_async: true,
+        });
+
+      console.log(
+        "Electron video uploaded:",
+        cloudinaryUpload.secure_url
       );
 
-      if (stopProcessing.data.status !== 200) {
-        console.log(
-          "Error: Something went wrong when stopping the process and try to complete the processing stage"
-        );
-      }
-
-      // if (stopProcessing.data.status === 200) {
-      //   // Clean up temporary file
-      //   fs.unlink(filePath, (err) => {
-      //     if (!err) {
-      //       console.log("🗑️ " + data.filename + " deleted successfully");
-      //     } else {
-      //       console.error("❌ Error deleting file:", err);
-      //     }
-      //   });
-      // }
-    } catch (error) {
-      console.error("🔴 Error processing video:", error);
-      socket.emit("upload-error", { message: "Failed to process video" });
-    } finally {
-      // [filePath, audioPath].forEach((p) => {
-      //   if (p == audioPath && plan === "PRO") {
-      //     fs.unlink(p, (err) => {
-      //       if (!err) {
-      //         console.log(`${p} file removed`);
-      //       } else {
-      //         console.log("Error while removing, ", p, err);
-      //       }
-      //     });
-      //   } else if (p == filePath) {
-      //     fs.unlink(p, (err) => {
-      //       if (!err) {
-      //         console.log(`${p} file removed`);
-      //       } else {
-      //         console.log("Error while removing, ", p, err);
-      //       }
-      //     });
-      //   }
-      // });
-      fs.unlink(filePath, (err) => {
-        if (err) console.error("Error deleting temp file:", filePath, err);
-        else console.log("🗑️ Temp file deleted:", filePath);
+      socket.emit("processing-complete", {
+        filename,
+        videoUrl: cloudinaryUpload.secure_url,
       });
-      fs.unlink(audioPath, (err) => {
-        if (err) console.error("Error deleting temp file:", audioPath, err);
-        else console.log("🗑️ Temp file deleted:", audioPath);
-      })
+    } catch (error) {
+      console.error("Socket video upload failed:", {
+        message: error.message,
+        response: error.response?.data,
+      });
+
+      socket.emit("upload-error", {
+        message: "Failed to upload recorded video",
+      });
+    } finally {
+      recordingStreams.delete(key);
+
+      fs.unlink(filePath, (error) => {
+        if (error && error.code !== "ENOENT") {
+          console.error(
+            "Socket temporary-file deletion failed:",
+            error
+          );
+        }
+      });
+    }
+  });
+
+  socket.on("disconnect", (reason) => {
+    console.log("Socket disconnected:", socket.id, reason);
+
+    for (const [key, recording] of recordingStreams.entries()) {
+      if (key.startsWith(`${socket.id}:`)) {
+        recording.stream.destroy();
+
+        fs.unlink(recording.filePath, (error) => {
+          if (error && error.code !== "ENOENT") {
+            console.error(
+              "Interrupted recording cleanup failed:",
+              error
+            );
+          }
+        });
+
+        recordingStreams.delete(key);
+      }
     }
   });
 });
 
 app.use((error, req, res, next) => {
-  console.error("Upload error:", error);
+  console.error("Unhandled server error:", error);
 
   if (error instanceof multer.MulterError) {
     if (error.code === "LIMIT_FILE_SIZE") {
       return res.status(413).json({
         status: 413,
-        message: "Video is too large. Maximum allowed size is 100 MB.",
+        message: "Video is too large. Maximum allowed size is 500 MB.",
       });
     }
 
@@ -467,12 +584,21 @@ app.use((error, req, res, next) => {
     });
   }
 
+  if (error.message === "Not allowed by CORS") {
+    return res.status(403).json({
+      status: 403,
+      message: "Origin is not allowed",
+    });
+  }
+
   return res.status(500).json({
     status: 500,
     message: "Internal server error",
   });
 });
 
-server.listen(5000, () => {
-  console.log("🚀 Server listening on port 5000");
+const PORT = Number(process.env.PORT) || 5000;
+
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`Server listening on port ${PORT}`);
 });
