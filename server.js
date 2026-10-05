@@ -25,7 +25,7 @@ app.use(
 const upload = multer({
   dest: os.tmpdir(),
   limits: {
-    fileSize: 50 * 1024 * 1024,
+    fileSize: 100 * 1024 * 1024,
   },
 });
 app.post("/api/upload", upload.single("file"), async (req, res) => {
@@ -447,6 +447,29 @@ io.on("connection", (socket) => {
         else console.log("🗑️ Temp file deleted:", audioPath);
       })
     }
+  });
+});
+
+app.use((error, req, res, next) => {
+  console.error("Upload error:", error);
+
+  if (error instanceof multer.MulterError) {
+    if (error.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({
+        status: 413,
+        message: "Video is too large. Maximum allowed size is 100 MB.",
+      });
+    }
+
+    return res.status(400).json({
+      status: 400,
+      message: error.message,
+    });
+  }
+
+  return res.status(500).json({
+    status: 500,
+    message: "Internal server error",
   });
 });
 
