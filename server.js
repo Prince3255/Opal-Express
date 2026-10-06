@@ -213,6 +213,80 @@ app.post("/api/upload", upload.single("file"), async (req, res, next) => {
   }
 });
 
+const sleep = (milliseconds) =>
+  new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+
+const generateGeminiContent = async (prompt) => {
+  const models = ["gemini-3.8-flash", "gemini-3.5-flash-lite"];
+
+  let lastError;
+
+  for (const model of models) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const response = await axios.post(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+          {
+            contents: [
+              {
+                parts: [
+                  {
+                    text: prompt,
+                  },
+                ],
+              },
+            ],
+            generationConfig: {
+              responseMimeType: "application/json",
+            },
+          },
+          {
+            headers: {
+              "x-goog-api-key": process.env.GEMINI_API_KEY,
+              "Content-Type": "application/json",
+            },
+            timeout: 60000,
+          },
+        );
+
+        return response.data;
+      } catch (error) {
+        lastError = error;
+
+        const status = error.response?.status;
+
+        const retryable =
+          status === 429 ||
+          status === 500 ||
+          status === 502 ||
+          status === 503 ||
+          status === 504;
+
+        if (!retryable) {
+          throw error;
+        }
+
+        const delay =
+          Math.min(30000, 2000 * 2 ** attempt) +
+          Math.floor(Math.random() * 1000);
+
+        console.error(
+          `Gemini ${model} failed with ${status}. ` +
+            `Retrying in ${delay} ms...`,
+        );
+
+        await sleep(delay);
+      }
+    }
+
+    console.error(`Switching from ${model} to another Gemini model`);
+  }
+
+  throw lastError;
+};
+
 const transcript = async (audioFile, trial, userId, secureUrl, workspaceId) => {
   try {
     const speechmaticsResponse = await smClient.transcribe(
@@ -236,14 +310,11 @@ const transcript = async (audioFile, trial, userId, secureUrl, workspaceId) => {
       throw new Error("No transcript generated");
     }
 
-    const titleResponse = await axios.post(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
-      {
-        contents: [
-          {
-            parts: [
-              {
-                text: `
+    let title = "Untitled video";
+    let description = "No description generated";
+
+    try {
+      const prompt = `
 Read the transcript below and return valid JSON only.
 
 Required format:
@@ -260,52 +331,40 @@ Rules:
 
 Transcript:
 ${transcriptText}
-                `.trim(),
-              },
-            ],
-          },
-        ],
-        generationConfig: {
-          responseMimeType: "application/json",
-        },
-      },
-      {
-        headers: {
-          "x-goog-api-key": process.env.GEMINI_API_KEY,
-          "Content-Type": "application/json",
-        },
-      },
-    );
+      `.trim();
 
-    const generatedText =
-      titleResponse.data?.candidates?.content?.parts?.text[0];
+      const geminiData = await generateGeminiContent(prompt);
 
-    if (!generatedText) {
-      throw new Error("Gemini returned no generated content");
-    }
+      const generatedText =
+        geminiData?.candidates?.[0]?.content?.parts?.[0]?.text;
 
-    const cleanedText = generatedText
-      .replace(/^```json\s*/i, "")
-      .replace(/^```\s*/i, "")
-      .replace(/\s*```$/i, "")
-      .trim();
+      if (!generatedText) {
+        throw new Error("Gemini returned no generated content");
+      }
 
-    let generatedContent;
+      const cleanedText = generatedText
+        .replace(/^```json\s*/i, "")
+        .replace(/^```\s*/i, "")
+        .replace(/\s*```$/i, "")
+        .trim();
 
-    try {
-      generatedContent = JSON.parse(cleanedText);
+      const generatedContent = JSON.parse(cleanedText);
+
+      title = generatedContent.title?.trim() || title;
+
+      description = generatedContent.description?.trim() || description;
+
+      console.log("Generated title:", title);
+      console.log("Generated description:", description);
     } catch (error) {
-      console.error("Invalid Gemini JSON:", generatedText);
-      throw new Error("Could not parse Gemini title and description");
+      console.error("Gemini generation failed:", {
+        status: error.response?.status,
+        message: error.message,
+        response: error.response?.data,
+      });
+
+      console.log("Using fallback title and description");
     }
-
-    const title = generatedContent.title?.trim() || "Untitled video";
-
-    const description =
-      generatedContent.description?.trim() || "No description generated";
-
-    console.log("Generated title:", title);
-    console.log("Generated description:", description);
 
     const saveResponse = await axios.post(
       `${process.env.NEXT_API_HOST}/recording/${userId}/transcribe`,
@@ -323,7 +382,7 @@ ${transcriptText}
 
     if (saveResponse.data?.status !== 200) {
       throw new Error(
-        `Transcript API returned status ${saveResponse.data?.status}`,
+        `Transcript API failed with status ${saveResponse.data?.status}`,
       );
     }
 
