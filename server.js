@@ -70,6 +70,22 @@ const smClient = new BatchClient({
 });
 
 
+const uploadVideoToCloudinary = (filePath, options) => {
+  return new Promise((resolve, reject) => {
+    cloudinary.uploader.upload_large(
+      filePath,
+      options,
+      (error, result) => {
+        if (error) {
+          reject(error);
+        } else {
+          resolve(result);
+        }
+      }
+    );
+  });
+};
+
 app.post(
   "/api/upload",
   upload.single("file"),
@@ -116,7 +132,7 @@ app.post(
       );
 
       const cloudinaryUpload =
-        await cloudinary.uploader.upload_large(filePath, {
+        await uploadVideoToCloudinary(filePath, {
           resource_type: "video",
           public_id: req.file.filename,
           folder: "video-recording-opal",
@@ -138,23 +154,35 @@ app.post(
           eager_async: true,
         });
 
+      console.log("Complete Cloudinary response:", cloudinaryUpload);
+
+      if (!cloudinaryUpload?.secure_url) {
+        throw new Error(
+          "Cloudinary upload succeeded but secure_url is missing"
+        );
+      }
+
       console.log(
         "Direct video uploaded:",
         cloudinaryUpload.secure_url
       );
 
-      // Start transcription separately for PRO users.
-      // This does not block the upload response.
       if (plan === "PRO") {
         axios
-          .post("https://opal-express-08so.onrender.com/api/audio", {
-            videoUrl: cloudinaryUpload.secure_url,
-            clerkId: userId,
-            plan,
-            workspaceId,
-          })
-          .then(() => {
-            console.log("Transcription request started");
+          .post(
+            "https://opal-express-08so.onrender.com/api/audio",
+            {
+              videoUrl: cloudinaryUpload.secure_url,
+              clerkId: userId,
+              plan,
+              workspaceId,
+            }
+          )
+          .then((response) => {
+            console.log(
+              "Transcription request started:",
+              response.data
+            );
           })
           .catch((error) => {
             console.error(
@@ -189,6 +217,7 @@ app.post(
       console.error("Direct upload failed:", {
         message: error.message,
         response: error.response?.data,
+        stack: error.stack,
       });
 
       next(error);
@@ -197,7 +226,7 @@ app.post(
         fs.unlink(filePath, (error) => {
           if (error && error.code !== "ENOENT") {
             console.error(
-              "Temporary direct-upload file deletion failed:",
+              "Temporary file deletion failed:",
               error
             );
           }
@@ -316,10 +345,22 @@ app.post("/api/audio", async (req, res) => {
       workspaceId,
     } = req.body;
 
+    console.log("Audio request received:", {
+      hasVideoUrl: Boolean(videoUrl),
+      hasClerkId: Boolean(clerkId),
+      plan,
+      hasWorkspaceId: Boolean(workspaceId),
+    });
+
     if (!videoUrl || !clerkId || !workspaceId) {
       return res.status(400).json({
         status: 400,
         message: "Missing audio processing data",
+        missing: {
+          videoUrl: !videoUrl,
+          clerkId: !clerkId,
+          workspaceId: !workspaceId,
+        },
       });
     }
 
@@ -355,14 +396,15 @@ app.post("/api/audio", async (req, res) => {
       message: "Transcription completed",
     });
   } catch (error) {
-    console.error("Audio transcription failed:", {
+    console.error("Audio processing failed:", {
       message: error.message,
       response: error.response?.data,
+      stack: error.stack,
     });
 
     return res.status(500).json({
       status: 500,
-      message: "Audio transcription failed",
+      message: "Audio processing failed",
     });
   }
 });
