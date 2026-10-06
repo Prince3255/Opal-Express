@@ -215,7 +215,7 @@ app.post("/api/upload", upload.single("file"), async (req, res, next) => {
 
 const transcript = async (audioFile, trial, userId, secureUrl, workspaceId) => {
   try {
-    const response = await smClient.transcribe(
+    const speechmaticsResponse = await smClient.transcribe(
       audioFile,
       {
         transcription_config: {
@@ -225,7 +225,7 @@ const transcript = async (audioFile, trial, userId, secureUrl, workspaceId) => {
       "json-v2",
     );
 
-    const transcriptText = response.results
+    const transcriptText = speechmaticsResponse.results
       .map((result) => result.alternatives?.[0]?.content || "")
       .join(" ")
       .trim();
@@ -236,8 +236,8 @@ const transcript = async (audioFile, trial, userId, secureUrl, workspaceId) => {
       throw new Error("No transcript generated");
     }
 
-    const aiResponse = await axios.post(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+    const titleResponse = await axios.post(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
       {
         contents: [
           {
@@ -246,15 +246,17 @@ const transcript = async (audioFile, trial, userId, secureUrl, workspaceId) => {
                 text: `
 Read the transcript below and return valid JSON only.
 
-Required JSON format:
+Required format:
 {
   "title": "short accurate title",
   "description": "short summary of the transcript"
 }
 
-Do not use Markdown.
-Do not wrap the response in backticks.
-Do not add any explanation.
+Rules:
+- Return only valid JSON.
+- Do not use Markdown.
+- Do not wrap the JSON in backticks.
+- Do not add any explanation.
 
 Transcript:
 ${transcriptText}
@@ -263,6 +265,9 @@ ${transcriptText}
             ],
           },
         ],
+        generationConfig: {
+          responseMimeType: "application/json",
+        },
       },
       {
         headers: {
@@ -273,10 +278,10 @@ ${transcriptText}
     );
 
     const generatedText =
-      aiResponse.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      titleResponse.data?.candidates?.content?.parts?.text[0];
 
     if (!generatedText) {
-      throw new Error("Gemini returned no title or description");
+      throw new Error("Gemini returned no generated content");
     }
 
     const cleanedText = generatedText
@@ -290,7 +295,7 @@ ${transcriptText}
     try {
       generatedContent = JSON.parse(cleanedText);
     } catch (error) {
-      console.error("Gemini returned invalid JSON:", generatedText);
+      console.error("Invalid Gemini JSON:", generatedText);
       throw new Error("Could not parse Gemini title and description");
     }
 
@@ -302,7 +307,7 @@ ${transcriptText}
     console.log("Generated title:", title);
     console.log("Generated description:", description);
 
-    const result = await axios.post(
+    const saveResponse = await axios.post(
       `${process.env.NEXT_API_HOST}/recording/${userId}/transcribe`,
       {
         filename: secureUrl,
@@ -316,10 +321,10 @@ ${transcriptText}
       },
     );
 
-    if (result.data?.status !== 200) {
-      console.error("Failed to save transcript data:", result.data);
-
-      throw new Error("Transcript data was not saved");
+    if (saveResponse.data?.status !== 200) {
+      throw new Error(
+        `Transcript API returned status ${saveResponse.data?.status}`,
+      );
     }
 
     console.log("Transcript, title, and description saved successfully");
