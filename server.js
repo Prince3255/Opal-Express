@@ -380,9 +380,15 @@ ${transcriptText}
       },
     );
 
-    if (saveResponse.data?.status !== 200) {
+    console.log("Transcript API response:", {
+      status: saveResponse.status,
+      data: saveResponse.data,
+    });
+
+    if (saveResponse.status < 200 || saveResponse.status >= 300) {
       throw new Error(
-        `Transcript API failed with status ${saveResponse.data?.status}`,
+        saveResponse.data?.message ||
+          `Transcript API returned HTTP ${saveResponse.status}`,
       );
     }
 
@@ -396,7 +402,9 @@ ${transcriptText}
   } catch (error) {
     console.error("Transcript processing failed:", {
       message: error.message,
-      response: error.response?.data,
+      status: error.response?.status,
+      responseData: error.response?.data,
+      responseHeaders: error.response?.headers,
       stack: error.stack,
     });
 
