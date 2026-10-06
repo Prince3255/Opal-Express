@@ -51,7 +51,7 @@ const server = http.createServer(app);
 const uploadDirectory = path.join(os.tmpdir(), "opal-uploads");
 const socketRecordingDirectory = path.join(
   os.tmpdir(),
-  "opal-socket-recordings"
+  "opal-socket-recordings",
 );
 
 fs.mkdirSync(uploadDirectory, { recursive: true });
@@ -69,281 +69,280 @@ const smClient = new BatchClient({
   appId: process.env.SPEECHMICS_APP_ID,
 });
 
-
 const uploadVideoToCloudinary = (filePath, options) => {
   return new Promise((resolve, reject) => {
-    cloudinary.uploader.upload_large(
-      filePath,
-      options,
-      (error, result) => {
-        if (error) {
-          reject(error);
-        } else {
-          resolve(result);
-        }
+    cloudinary.uploader.upload_large(filePath, options, (error, result) => {
+      if (error) {
+        reject(error);
+      } else {
+        resolve(result);
       }
-    );
+    });
   });
 };
 
-app.post(
-  "/api/upload",
-  upload.single("file"),
-  async (req, res, next) => {
-    const filePath = req.file?.path;
+app.post("/api/upload", upload.single("file"), async (req, res, next) => {
+  const filePath = req.file?.path;
 
-    try {
-      if (!req.file || !filePath) {
-        return res.status(400).json({
-          status: 400,
-          message: "No video file was received",
-        });
-      }
-
-      const {
-        userId,
-        clerkId,
-        plan,
-        workspaceId,
-      } = req.body;
-
-      if (!userId || !clerkId || !workspaceId) {
-        return res.status(400).json({
-          status: 400,
-          message: "Missing user or workspace information",
-        });
-      }
-
-      console.log("Direct upload received:", {
-        originalName: req.file.originalname,
-        size: req.file.size,
-        mimeType: req.file.mimetype,
-        filePath,
-        userId,
-        plan,
-        workspaceId,
+  try {
+    if (!req.file || !filePath) {
+      return res.status(400).json({
+        status: 400,
+        message: "No video file was received",
       });
-
-      await axios.post(
-        `${process.env.NEXT_API_HOST}/recording/${userId}/processing`,
-        {
-          filename: req.file.filename,
-        }
-      );
-
-      const cloudinaryUpload =
-        await uploadVideoToCloudinary(filePath, {
-          resource_type: "video",
-          public_id: req.file.filename,
-          folder: "video-recording-opal",
-          chunk_size: 20 * 1024 * 1024,
-          eager: [
-            {
-              width: 1280,
-              height: 720,
-              crop: "limit",
-              quality: "auto",
-            },
-            {
-              width: 854,
-              height: 480,
-              crop: "limit",
-              quality: "auto",
-            },
-          ],
-          eager_async: true,
-        });
-
-      console.log("Complete Cloudinary response:", cloudinaryUpload);
-
-      if (!cloudinaryUpload?.secure_url) {
-        throw new Error(
-          "Cloudinary upload succeeded but secure_url is missing"
-        );
-      }
-
-      console.log(
-        "Direct video uploaded:",
-        cloudinaryUpload.secure_url
-      );
-
-      if (plan === "PRO") {
-        axios
-          .post(
-            "https://opal-express-08so.onrender.com/api/audio",
-            {
-              videoUrl: cloudinaryUpload.secure_url,
-              clerkId: userId,
-              plan,
-              workspaceId,
-            }
-          )
-          .then((response) => {
-            console.log(
-              "Transcription request started:",
-              response.data
-            );
-          })
-          .catch((error) => {
-            console.error(
-              "Background transcription failed:",
-              error.response?.data || error.message
-            );
-          });
-      }
-
-      const completeResponse = await axios.post(
-        `${process.env.NEXT_API_HOST}/recording/${userId}/complete`,
-        {
-          filename: req.file.filename,
-          videoUrl: cloudinaryUpload.secure_url,
-          videoId: cloudinaryUpload.public_id,
-        }
-      );
-
-      if (completeResponse.data?.status !== 200) {
-        console.error(
-          "Recording completion failed:",
-          completeResponse.data
-        );
-      }
-
-      return res.status(200).json({
-        status: 200,
-        message: "File uploaded successfully",
-        videoUrl: cloudinaryUpload.secure_url,
-      });
-    } catch (error) {
-      console.error("Direct upload failed:", {
-        message: error.message,
-        response: error.response?.data,
-        stack: error.stack,
-      });
-
-      next(error);
-    } finally {
-      if (filePath) {
-        fs.unlink(filePath, (error) => {
-          if (error && error.code !== "ENOENT") {
-            console.error(
-              "Temporary file deletion failed:",
-              error
-            );
-          }
-        });
-      }
     }
-  }
-);
 
-const transcript = async (
-  audioFile,
-  trial,
-  userId,
-  secureUrl,
-  workspaceId
-) => {
-  const response = await smClient.transcribe(
-    audioFile,
-    {
-      transcription_config: {
-        language: "en",
-      },
-    },
-    "json-v2"
-  );
+    const { userId, clerkId, plan, workspaceId } = req.body;
 
-  const transcriptText = response.results
-    .map((result) => result.alternatives?.[0]?.content || "")
-    .join(" ");
-
-  console.log("Transcript:", transcriptText);
-
-  if (!transcriptText) {
-    console.log("No transcript generated");
-    return;
-  }
-
-  const descriptionResponse = await axios.post(
-    "https://api-inference.huggingface.co/models/philschmid/bart-large-cnn-samsum",
-    {
-      inputs: transcriptText,
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
-        "Content-Type": "application/json",
-      },
+    if (!userId || !clerkId || !workspaceId) {
+      return res.status(400).json({
+        status: 400,
+        message: "Missing user or workspace information",
+      });
     }
-  );
 
-  const titleResponse = await axios.post(
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
-    {
-      contents: [
+    console.log("Direct upload received:", {
+      originalName: req.file.originalname,
+      size: req.file.size,
+      mimeType: req.file.mimetype,
+      filePath,
+      userId,
+      plan,
+      workspaceId,
+    });
+
+    await axios.post(
+      `${process.env.NEXT_API_HOST}/recording/${userId}/processing`,
+      {
+        filename: req.file.filename,
+      },
+    );
+
+    const cloudinaryUpload = await uploadVideoToCloudinary(filePath, {
+      resource_type: "video",
+      public_id: req.file.filename,
+      folder: "video-recording-opal",
+      chunk_size: 20 * 1024 * 1024,
+      eager: [
         {
-          parts: [
-            {
-              text: `Generate one short, accurate title for this transcript. Return only the title.
-
-Transcript:
-${transcriptText}`,
-            },
-          ],
+          width: 1280,
+          height: 720,
+          crop: "limit",
+          quality: "auto",
+        },
+        {
+          width: 854,
+          height: 480,
+          crop: "limit",
+          quality: "auto",
         },
       ],
-    },
-    {
-      headers: {
-        "x-goog-api-key": process.env.GEMINI_API_KEY,
-        "Content-Type": "application/json",
-      },
+      eager_async: true,
+    });
+
+    console.log("Complete Cloudinary response:", cloudinaryUpload);
+
+    if (!cloudinaryUpload?.secure_url) {
+      throw new Error("Cloudinary upload succeeded but secure_url is missing");
     }
-  );
 
-  let title =
-    titleResponse.data?.candidates?.[0]?.content?.parts?.[0]?.text ||
-    "Untitled video";
+    console.log("Direct video uploaded:", cloudinaryUpload.secure_url);
 
-  const match = title.match(/^\s*\*\s*(.+)$/m);
-  title = match ? match[1].trim() : title.trim();
+    if (plan === "PRO") {
+      const audioRequest = {
+        videoUrl: cloudinaryUpload.secure_url,
+        clerkId: userId,
+        plan,
+        workspaceId,
+      };
 
-  const description =
-    descriptionResponse.data?.[0]?.summary_text ||
-    "No description generated";
+      console.log("Starting transcription with:", {
+        hasVideoUrl: Boolean(audioRequest.videoUrl),
+        hasClerkId: Boolean(audioRequest.clerkId),
+        plan: audioRequest.plan,
+        hasWorkspaceId: Boolean(audioRequest.workspaceId),
+      });
 
-  const result = await axios.post(
-    `${process.env.NEXT_API_HOST}/recording/${userId}/transcribe`,
-    {
-      filename: secureUrl,
-      content: {
-        title,
-        description,
-      },
-      transcript: transcriptText,
-      trial,
-      workspaceId,
+      axios
+        .post("https://opal-express-08so.onrender.com/api/audio", audioRequest)
+        .then((response) => {
+          console.log("Transcription completed:", response.data);
+        })
+        .catch((error) => {
+          console.error(
+            "Background transcription failed:",
+            error.response?.data || error.message,
+          );
+        });
     }
-  );
 
-  if (result.data?.status !== 200) {
-    console.error(
-      "Title and description creation failed:",
-      result.data
+    const completeResponse = await axios.post(
+      `${process.env.NEXT_API_HOST}/recording/${userId}/complete`,
+      {
+        filename: req.file.filename,
+        videoUrl: cloudinaryUpload.secure_url,
+        videoId: cloudinaryUpload.public_id,
+      },
     );
-  } else {
-    console.log("Title and description saved");
+
+    if (completeResponse.data?.status !== 200) {
+      console.error("Recording completion failed:", completeResponse.data);
+    }
+
+    return res.status(200).json({
+      status: 200,
+      message: "File uploaded successfully",
+      videoUrl: cloudinaryUpload.secure_url,
+    });
+  } catch (error) {
+    console.error("Direct upload failed:", {
+      message: error.message,
+      response: error.response?.data,
+      stack: error.stack,
+    });
+
+    next(error);
+  } finally {
+    if (filePath) {
+      fs.unlink(filePath, (error) => {
+        if (error && error.code !== "ENOENT") {
+          console.error("Temporary file deletion failed:", error);
+        }
+      });
+    }
+  }
+});
+
+const transcript = async (audioFile, trial, userId, secureUrl, workspaceId) => {
+  try {
+    const response = await smClient.transcribe(
+      audioFile,
+      {
+        transcription_config: {
+          language: "en",
+        },
+      },
+      "json-v2",
+    );
+
+    const transcriptText = response.results
+      .map((result) => result.alternatives?.[0]?.content || "")
+      .join(" ")
+      .trim();
+
+    console.log("Transcript:", transcriptText);
+
+    if (!transcriptText) {
+      throw new Error("No transcript generated");
+    }
+
+    const aiResponse = await axios.post(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+      {
+        contents: [
+          {
+            parts: [
+              {
+                text: `
+Read the transcript below and return valid JSON only.
+
+Required JSON format:
+{
+  "title": "short accurate title",
+  "description": "short summary of the transcript"
+}
+
+Do not use Markdown.
+Do not wrap the response in backticks.
+Do not add any explanation.
+
+Transcript:
+${transcriptText}
+                `.trim(),
+              },
+            ],
+          },
+        ],
+      },
+      {
+        headers: {
+          "x-goog-api-key": process.env.GEMINI_API_KEY,
+          "Content-Type": "application/json",
+        },
+      },
+    );
+
+    const generatedText =
+      aiResponse.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (!generatedText) {
+      throw new Error("Gemini returned no title or description");
+    }
+
+    const cleanedText = generatedText
+      .replace(/^```json\s*/i, "")
+      .replace(/^```\s*/i, "")
+      .replace(/\s*```$/i, "")
+      .trim();
+
+    let generatedContent;
+
+    try {
+      generatedContent = JSON.parse(cleanedText);
+    } catch (error) {
+      console.error("Gemini returned invalid JSON:", generatedText);
+      throw new Error("Could not parse Gemini title and description");
+    }
+
+    const title = generatedContent.title?.trim() || "Untitled video";
+
+    const description =
+      generatedContent.description?.trim() || "No description generated";
+
+    console.log("Generated title:", title);
+    console.log("Generated description:", description);
+
+    const result = await axios.post(
+      `${process.env.NEXT_API_HOST}/recording/${userId}/transcribe`,
+      {
+        filename: secureUrl,
+        content: {
+          title,
+          description,
+        },
+        transcript: transcriptText,
+        trial,
+        workspaceId,
+      },
+    );
+
+    if (result.data?.status !== 200) {
+      console.error("Failed to save transcript data:", result.data);
+
+      throw new Error("Transcript data was not saved");
+    }
+
+    console.log("Transcript, title, and description saved successfully");
+
+    return {
+      transcript: transcriptText,
+      title,
+      description,
+    };
+  } catch (error) {
+    console.error("Transcript processing failed:", {
+      message: error.message,
+      response: error.response?.data,
+      stack: error.stack,
+    });
+
+    throw error;
   }
 };
 
 app.post("/api/audio", async (req, res) => {
   try {
-    const {
-      videoUrl,
-      clerkId,
-      plan,
-      workspaceId,
-    } = req.body;
+    const { videoUrl, clerkId, plan, workspaceId } = req.body;
 
     console.log("Audio request received:", {
       hasVideoUrl: Boolean(videoUrl),
@@ -364,10 +363,7 @@ app.post("/api/audio", async (req, res) => {
       });
     }
 
-    const audioUrl = videoUrl.replace(
-      /\.(webm|mp4|mov)(\?.*)?$/i,
-      ".mp3"
-    );
+    const audioUrl = videoUrl.replace(/\.(webm|mp4|mov)(\?.*)?$/i, ".mp3");
 
     const audioResponse = await axios.get(audioUrl, {
       responseType: "arraybuffer",
@@ -380,7 +376,7 @@ app.post("/api/audio", async (req, res) => {
       `audio-${Date.now()}.mp3`,
       {
         type: "audio/mpeg",
-      }
+      },
     );
 
     await transcript(
@@ -388,7 +384,7 @@ app.post("/api/audio", async (req, res) => {
       plan === "FREE",
       clerkId,
       videoUrl,
-      workspaceId
+      workspaceId,
     );
 
     return res.status(200).json({
@@ -408,7 +404,6 @@ app.post("/api/audio", async (req, res) => {
     });
   }
 });
-
 
 const recordingStreams = new Map();
 
@@ -444,14 +439,11 @@ io.on("connection", (socket) => {
       let recording = recordingStreams.get(key);
 
       if (!recording) {
-        const safeFilename = filename.replace(
-          /[^a-zA-Z0-9._-]/g,
-          "_"
-        );
+        const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
 
         const filePath = path.join(
           socketRecordingDirectory,
-          `${socket.id}-${safeFilename}`
+          `${socket.id}-${safeFilename}`,
         );
 
         const stream = fs.createWriteStream(filePath);
@@ -474,7 +466,7 @@ io.on("connection", (socket) => {
         buffer = Buffer.from(
           chunks.buffer,
           chunks.byteOffset,
-          chunks.byteLength
+          chunks.byteLength,
         );
       } else if (
         chunks &&
@@ -532,8 +524,9 @@ io.on("connection", (socket) => {
 
       console.log("All socket chunks saved:", filePath);
 
-      const cloudinaryUpload =
-        await cloudinary.uploader.upload_large(filePath, {
+      const cloudinaryUpload = await cloudinary.uploader.upload_large(
+        filePath,
+        {
           resource_type: "video",
           public_id: filename.replace(/\.[^/.]+$/, ""),
           folder: "video-recording-opal",
@@ -553,12 +546,10 @@ io.on("connection", (socket) => {
             },
           ],
           eager_async: true,
-        });
-
-      console.log(
-        "Electron video uploaded:",
-        cloudinaryUpload.secure_url
+        },
       );
+
+      console.log("Electron video uploaded:", cloudinaryUpload.secure_url);
 
       socket.emit("processing-complete", {
         filename,
@@ -578,10 +569,7 @@ io.on("connection", (socket) => {
 
       fs.unlink(filePath, (error) => {
         if (error && error.code !== "ENOENT") {
-          console.error(
-            "Socket temporary-file deletion failed:",
-            error
-          );
+          console.error("Socket temporary-file deletion failed:", error);
         }
       });
     }
@@ -596,10 +584,7 @@ io.on("connection", (socket) => {
 
         fs.unlink(recording.filePath, (error) => {
           if (error && error.code !== "ENOENT") {
-            console.error(
-              "Interrupted recording cleanup failed:",
-              error
-            );
+            console.error("Interrupted recording cleanup failed:", error);
           }
         });
 
