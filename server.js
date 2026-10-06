@@ -219,7 +219,7 @@ const sleep = (milliseconds) =>
   });
 
 const generateGeminiContent = async (prompt) => {
-  const models = ["gemini-3.8-flash", "gemini-3.5-flash-lite"];
+  const models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
 
   let lastError;
 
@@ -227,7 +227,7 @@ const generateGeminiContent = async (prompt) => {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const response = await axios.post(
-          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`,
           {
             contents: [
               {
@@ -257,12 +257,7 @@ const generateGeminiContent = async (prompt) => {
 
         const status = error.response?.status;
 
-        const retryable =
-          status === 429 ||
-          status === 500 ||
-          status === 502 ||
-          status === 503 ||
-          status === 504;
+        const retryable = [429, 500, 502, 503, 504].includes(status);
 
         if (!retryable) {
           throw error;
