@@ -219,14 +219,15 @@ const sleep = (milliseconds) =>
   });
 
 const generateGeminiContent = async (prompt) => {
-  // Use valid Gemini model identifiers
-  const models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"];
+  const models = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash"];
 
   let lastError;
 
   for (const model of models) {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
+        console.log(`Trying Gemini model: ${model}`);
+
         const response = await axios.post(
           `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
           {
@@ -249,7 +250,7 @@ const generateGeminiContent = async (prompt) => {
               "Content-Type": "application/json",
             },
             timeout: 60000,
-          }
+          },
         );
 
         return response.data;
@@ -257,6 +258,11 @@ const generateGeminiContent = async (prompt) => {
         lastError = error;
 
         const status = error.response?.status;
+
+        console.error(
+          `Gemini ${model} failed:`,
+          error.response?.data || error.message,
+        );
 
         const retryable =
           status === 429 ||
@@ -273,16 +279,13 @@ const generateGeminiContent = async (prompt) => {
           Math.min(30000, 2000 * 2 ** attempt) +
           Math.floor(Math.random() * 1000);
 
-        console.error(
-          `Gemini ${model} failed with ${status}. ` +
-            `Retrying in ${delay} ms...`
-        );
+        console.log(`Retrying in ${delay}ms...`);
 
         await sleep(delay);
       }
     }
 
-    console.error(`Switching from ${model} to another Gemini model`);
+    console.log(`Switching from ${model} to another Gemini model`);
   }
 
   throw lastError;
